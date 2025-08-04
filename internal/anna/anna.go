@@ -1,19 +1,17 @@
 package anna
 
 import (
-	"fmt"
-	"net/url"
-
-	"strings"
-
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
-	colly "github.com/gocolly/colly/v2"
+	"github.com/PuerkitoBio/goquery"
 	"github.com/iosifache/annas-mcp/internal/logger"
 	"go.uber.org/zap"
 )
@@ -36,61 +34,77 @@ func extractMetaInformation(meta string) (language, format, size string) {
 	return language, format, size
 }
 
-func FindBook(query string) ([]*Book, error) {
+func downloadHTML(query string) (string, *url.URL, error) {
 	l := logger.GetLogger()
-
-	c := colly.NewCollector(
-		colly.Async(true),
-	)
-
-	bookList := make([]*colly.HTMLElement, 0)
-
-	c.OnHTML("a", func(e *colly.HTMLElement) {
-		if strings.Index(e.Attr("href"), "/md5/") == 0 {
-			bookList = append(bookList, e)
-		}
-	})
-
-	c.OnRequest(func(r *colly.Request) {
-		l.Info("Visiting URL", zap.String("url", r.URL.String()))
-	})
-
 	fullURL := fmt.Sprintf(AnnasSearchEndpoint, url.QueryEscape(query))
-	c.Visit(fullURL)
-	c.Wait()
+	l.Info("Visiting URL", zap.String("url", fullURL))
+
+	resp, err := http.Get(fullURL)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+
+	return string(body), resp.Request.URL, nil
+}
+
+func parseBooks(htmlContent string, pageURL *url.URL) ([]*Book, error) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return nil, err
+	}
 
 	bookListParsed := make([]*Book, 0)
-	for _, e := range bookList {
-		meta := e.DOM.Parent().Find("div.relative.top-\\[-1\\].pl-4.grow.overflow-hidden > div").Eq(0).Text()
-		title := e.DOM.Parent().Find("div.relative.top-\\[-1\\].pl-4.grow.overflow-hidden > h3").Text()
-		publisher := e.DOM.Parent().Find("div.relative.top-\\[-1\\].pl-4.grow.overflow-hidden > div").Eq(1).Text()
-		authors := e.DOM.Parent().Find("div.relative.top-\\[-1\\].pl-4.grow.overflow-hidden > div").Eq(2).Text()
+	doc.Find("#aarecord-list > div > a[href^='/md5/']").Each(func(i int, s *goquery.Selection) {
+		infoContainer := s.Find("div.relative.top-\\[-1\\].pl-4.grow.overflow-hidden")
+
+		meta := infoContainer.Find("div").Eq(0).Text()
+		title := infoContainer.Find("h3").Text()
+		publisher := infoContainer.Find("div").Eq(1).Text()
+		authors := infoContainer.Find("div").Eq(2).Text()
 
 		language, format, size := extractMetaInformation(meta)
 
-		link := e.Attr("href")
+		link, _ := s.Attr("href")
 		hash := strings.TrimPrefix(link, "/md5/")
 
-		trimmedFormat := strings.TrimSpace(format)
-		if len(trimmedFormat) > 0 {
-			trimmedFormat = trimmedFormat[1:]
+		absoluteLink, err := pageURL.Parse(link)
+		if err != nil {
+			return
 		}
 
 		book := &Book{
 			Language:  strings.TrimSpace(language),
-			Format:    trimmedFormat,
+			Format:    strings.TrimSpace(format),
 			Size:      strings.TrimSpace(size),
 			Title:     strings.TrimSpace(title),
 			Publisher: strings.TrimSpace(publisher),
 			Authors:   strings.TrimSpace(authors),
-			URL:       e.Request.AbsoluteURL(link),
+			URL:       absoluteLink.String(),
 			Hash:      hash,
 		}
 
 		bookListParsed = append(bookListParsed, book)
-	}
+	})
 
 	return bookListParsed, nil
+}
+
+func FindBook(query string) ([]*Book, error) {
+	htmlContent, pageURL, err := downloadHTML(query)
+	if err != nil {
+		return nil, err
+	}
+	return parseBooks(htmlContent, pageURL)
 }
 
 func (b *Book) Download(secretKey, folderPath string) error {
