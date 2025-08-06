@@ -2,6 +2,7 @@ package anna
 
 import (
 	"io/ioutil"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,56 @@ func TestParseBooks(t *testing.T) {
 	htmlContent, err := ioutil.ReadFile(filepath.Join("testdata", "hearnshaw_search.html"))
 	if err != nil {
 		t.Fatalf("failed to read test data: %v", err)
+	}
+
+	// Create a dummy URL for parsing
+	pageURL, _ := url.Parse("")
+
+	// Call the function to be tested
+	books, err := parseBooks(string(htmlContent), pageURL)
+	if err != nil {
+		t.Fatalf("parseBooks returned an error: %v", err)
+	}
+
+	// Define the expected result
+	expectedBooks := []*Book{
+		{
+			Language:  "English [en]",
+			Format:    ".zip",
+			Size:      "0.1MB",
+			Title:     "The development of political ideas, by F.J.C. Hearnshaw ...",
+			Publisher: "E. Benn, Limited, 1931., England, 1931",
+			Authors:   "Hearnshaw, F. J. C. 1869-1946.",
+			Hash:      "fc57224f94300bfba438a54500eaabeb",
+		},
+	}
+
+	// Compare the actual result with the expected result
+	if len(books) != len(expectedBooks) {
+		t.Fatalf("expected %d books, but got %d", len(expectedBooks), len(books))
+	}
+
+	for i, book := range books {
+		expectedBook := expectedBooks[i]
+		// We ignore the URL field as requested
+		book.URL = ""
+		if !reflect.DeepEqual(book, expectedBook) {
+			t.Errorf("book %d does not match expected value.\nExpected: %+v\nGot:      %+v", i, expectedBook, book)
+		}
+	}
+}
+
+func TestParseBooks_Integration(t *testing.T) {
+	// Fetch the HTML from the live URL
+	resp, err := http.Get("https://annas-archive.org/search?q=The+development+of+political+ideas%2C+by+F.J.C.+Hearnshaw")
+	if err != nil {
+		t.Fatalf("failed to get URL: %v", err)
+	}
+	defer resp.Body.Close()
+
+	htmlContent, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
 	}
 
 	// Create a dummy URL for parsing
