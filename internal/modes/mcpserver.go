@@ -26,6 +26,12 @@ func SearchTool(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallTool
 		return nil, err
 	}
 
+	if len(books) == 0 {
+		return &mcp.CallToolResultFor[any]{
+			Content: []mcp.Content{&mcp.TextContent{Text: "No books found"}},
+		}, nil
+	}
+
 	bookList := ""
 	for _, book := range books {
 		bookList += book.String() + "\n\n"
