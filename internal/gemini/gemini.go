@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
-	"strings"
+	"time"
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/iosifache/annas-mcp/internal/types"
@@ -13,9 +14,6 @@ import (
 )
 
 func ExtractBookInfo(htmlContent string) ([]types.Book, error) {
-	if strings.Contains(htmlContent, "No results found on Anna's Archive") {
-		return []types.Book{}, nil
-	}
 
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
@@ -62,17 +60,37 @@ func ExtractBookInfo(htmlContent string) ([]types.Book, error) {
 		- URL
 		- Hash (from the download link)
 
+		If no books are found, return an empty JSON array: []
+
 		Here is the HTML content:
 		%s
 	`, htmlContent)
 
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	var resp *genai.GenerateContentResponse
+	const maxRetries = 5
+	const initialBackoff = 2 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		resp, err = model.GenerateContent(ctx, genai.Text(prompt))
+		if err == nil {
+			break
+		}
+
+		if i < maxRetries-1 {
+			backoff := initialBackoff * time.Duration(math.Pow(2, float64(i)))
+			// TODO: Use a proper logger
+			fmt.Printf("Gemini API call failed. Retrying in %v...\n", backoff)
+			time.Sleep(backoff)
+		}
+	}
+
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to generate content from Gemini after %d retries: %w", maxRetries, err)
 	}
 
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("no content in response from Gemini")
+		// This can happen if Gemini finds no books, which is a valid case.
+		return []types.Book{}, nil
 	}
 
 	part := resp.Candidates[0].Content.Parts[0]
@@ -82,7 +100,7 @@ func ExtractBookInfo(htmlContent string) ([]types.Book, error) {
 	}
 
 	var books []types.Book
-	if err := json.Unmarshal([]byte(textPart), &books); err != nil {
+	if err = json.Unmarshal([]byte(textPart), &books); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response from Gemini: %w", err)
 	}
 
