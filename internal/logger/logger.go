@@ -3,6 +3,7 @@ package logger
 import (
 	"log"
 	"os"
+	"strings"
 
 	"go.uber.org/zap"
 )
@@ -21,14 +22,23 @@ func init() {
 		}
 	}
 
+	logLevel := os.Getenv("ANNAS_LOG_LEVEL")
+
 	if isMCPMode {
 		logger, err = zap.NewProduction()
 	} else {
 		config := zap.NewDevelopmentConfig()
-		config.Level = zap.NewAtomicLevelAt(zap.WarnLevel)
+		level := zap.WarnLevel
+		switch strings.ToLower(logLevel) {
+		case "debug":
+			level = zap.DebugLevel
+		case "info":
+			level = zap.InfoLevel
+		}
+		config.Level = zap.NewAtomicLevelAt(level)
 		logger, err = config.Build()
 	}
-	
+
 	if err != nil {
 		log.Fatalf("Failed to initialize zap logger: %v", err)
 	}

@@ -1,6 +1,7 @@
 package anna
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/PuerkitoBio/goquery"
+	"github.com/iosifache/annas-mcp/internal/gemini"
 	"github.com/iosifache/annas-mcp/internal/logger"
+	"github.com/iosifache/annas-mcp/internal/types"
 	"go.uber.org/zap"
+	"golang.org/x/net/html"
 )
 
 const (
@@ -21,93 +24,72 @@ const (
 	AnnasDownloadEndpoint = "https://annas-archive.org/dyn/api/fast_download.json?md5=%s&key=%s"
 )
 
-func extractMetaInformation(meta string) (language, format, size string) {
-	parts := strings.Split(meta, ", ")
-	if len(parts) < 4 {
-		return "", "", ""
-	}
-
-	language = parts[0]
-	format = parts[1]
-	size = parts[3]
-
-	return language, format, size
+type fastDownloadResponse struct {
+	DownloadURL string `json:"download_url"`
+	Error       string `json:"error"`
 }
 
-func downloadHTML(query string) (string, *url.URL, error) {
+func Search(query string) ([]types.Book, error) {
 	l := logger.GetLogger()
 	fullURL := fmt.Sprintf(AnnasSearchEndpoint, url.QueryEscape(query))
 	l.Info("Visiting URL", zap.String("url", fullURL))
 
 	resp, err := http.Get(fullURL)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("bad status: %s", resp.Status)
+		return nil, fmt.Errorf("bad status: %s", resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", nil, err
-	}
-
-	return string(body), resp.Request.URL, nil
-}
-
-func parseBooks(htmlContent string, pageURL *url.URL) ([]*Book, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
-	if err != nil {
 		return nil, err
 	}
 
-	bookListParsed := make([]*Book, 0)
-	doc.Find("#aarecord-list > div > a[href^='/md5/']").Each(func(i int, s *goquery.Selection) {
-		infoContainer := s.Find("div.relative.top-\\[-1\\].pl-4.grow.overflow-hidden")
+	doc, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		// If parsing fails, we can still try to send the whole body.
+		l.Warn("Failed to parse HTML, passing whole body to Gemini", zap.Error(err))
+		return gemini.ExtractBookInfo(string(body))
+	}
 
-		meta := infoContainer.Find("div").Eq(0).Text()
-		title := infoContainer.Find("h3").Text()
-		publisher := infoContainer.Find("div").Eq(1).Text()
-		authors := infoContainer.Find("div").Eq(2).Text()
-
-		language, format, size := extractMetaInformation(meta)
-
-		link, _ := s.Attr("href")
-		hash := strings.TrimPrefix(link, "/md5/")
-
-		absoluteLink, err := pageURL.Parse(link)
-		if err != nil {
+	var listNode *html.Node
+	var findNode func(*html.Node)
+	findNode = func(n *html.Node) {
+		if listNode != nil {
 			return
 		}
-
-		book := &Book{
-			Language:  strings.TrimSpace(language),
-			Format:    strings.TrimSpace(format),
-			Size:      strings.TrimSpace(size),
-			Title:     strings.TrimSpace(title),
-			Publisher: strings.TrimSpace(publisher),
-			Authors:   strings.TrimSpace(authors),
-			URL:       absoluteLink.String(),
-			Hash:      hash,
+		if n.Type == html.ElementNode && n.Data == "div" {
+			for _, a := range n.Attr {
+				if a.Key == "class" && strings.Contains(a.Val, "js-aarecord-list-outer") {
+					listNode = n
+					return
+				}
+			}
 		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			findNode(c)
+		}
+	}
+	findNode(doc)
 
-		bookListParsed = append(bookListParsed, book)
-	})
+	if listNode == nil {
+		l.Warn("Could not find book list in HTML response, passing whole body to Gemini")
+		return gemini.ExtractBookInfo(string(body))
+	}
 
-	return bookListParsed, nil
-}
-
-func FindBook(query string) ([]*Book, error) {
-	htmlContent, pageURL, err := downloadHTML(query)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := html.Render(&buf, listNode); err != nil {
 		return nil, err
 	}
-	return parseBooks(htmlContent, pageURL)
+
+	return gemini.ExtractBookInfo(buf.String())
 }
 
-func (b *Book) Download(secretKey, folderPath string) error {
+func Download(b *types.Book, secretKey, folderPath string) error {
 	apiURL := fmt.Sprintf(AnnasDownloadEndpoint, b.Hash, secretKey)
 
 	resp, err := http.Get(apiURL)
@@ -151,12 +133,12 @@ func (b *Book) Download(secretKey, folderPath string) error {
 	return err
 }
 
-func (b *Book) String() string {
+func String(b *types.Book) string {
 	return fmt.Sprintf("Title: %s\nAuthors: %s\nPublisher: %s\nLanguage: %s\nFormat: %s\nSize: %s\nURL: %s\nHash: %s",
 		b.Title, b.Authors, b.Publisher, b.Language, b.Format, b.Size, b.URL, b.Hash)
 }
 
-func (b *Book) ToJSON() (string, error) {
+func ToJSON(b *types.Book) (string, error) {
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		return "", err

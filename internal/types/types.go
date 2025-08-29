@@ -1,4 +1,4 @@
-package anna
+package types
 
 type Book struct {
 	Language  string `json:"language"`
@@ -9,9 +9,4 @@ type Book struct {
 	Authors   string `json:"authors"`
 	URL       string `json:"url"`
 	Hash      string `json:"hash"`
-}
-
-type fastDownloadResponse struct {
-	DownloadURL string `json:"download_url"`
-	Error       string `json:"error"`
 }

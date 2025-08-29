@@ -2,9 +2,11 @@ package modes
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/iosifache/annas-mcp/internal/anna"
 	"github.com/iosifache/annas-mcp/internal/logger"
+	"github.com/iosifache/annas-mcp/internal/types"
 	"github.com/iosifache/annas-mcp/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
@@ -17,7 +19,7 @@ func SearchTool(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallTool
 		zap.String("searchTerm", params.Arguments.SearchTerm),
 	)
 
-	books, err := anna.FindBook(params.Arguments.SearchTerm)
+	books, err := anna.Search(params.Arguments.SearchTerm)
 	if err != nil {
 		l.Error("Search command failed",
 			zap.String("searchTerm", params.Arguments.SearchTerm),
@@ -26,25 +28,17 @@ func SearchTool(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallTool
 		return nil, err
 	}
 
-	if len(books) == 0 {
-		return &mcp.CallToolResultFor[any]{
-			Content: []mcp.Content{&mcp.TextContent{Text: "No books found"}},
-		}, nil
-	}
-
-	bookList := ""
-	for _, book := range books {
-		bookList += book.String() + "\n\n"
-	}
-
 	l.Info("Search command completed successfully",
 		zap.String("searchTerm", params.Arguments.SearchTerm),
-		zap.Int("resultsCount", len(books)),
 	)
 
+	jsonResult, err := json.Marshal(books)
+	if err != nil {
+		return nil, err
+	}
+
 	return &mcp.CallToolResultFor[any]{
-		Content:           []mcp.Content{&mcp.TextContent{Text: bookList}},
-		StructuredContent: books,
+		Content: []mcp.Content{&mcp.TextContent{Text: string(jsonResult)}},
 	}, nil
 }
 
@@ -67,13 +61,13 @@ func DownloadTool(ctx context.Context, cc *mcp.ServerSession, params *mcp.CallTo
 
 	title := params.Arguments.Title
 	format := params.Arguments.Format
-	book := &anna.Book{
+	book := &types.Book{
 		Hash:   params.Arguments.BookHash,
 		Title:  title,
 		Format: format,
 	}
 
-	err = book.Download(secretKey, downloadPath)
+	err = anna.Download(book, secretKey, downloadPath)
 	if err != nil {
 		l.Error("Download command failed",
 			zap.String("bookHash", params.Arguments.BookHash),
@@ -108,7 +102,7 @@ func StartMCPServer() {
 	server := mcp.NewServer("annas-mcp", serverVersion, nil)
 
 	server.AddTools(
-		mcp.NewServerTool("search", "Search books", SearchTool, mcp.Input(
+		mcp.NewServerTool("search", "Search books and return HTML", SearchTool, mcp.Input(
 			mcp.Property("term", mcp.Description("Term to search for")),
 		)),
 		mcp.NewServerTool("download", "Download a book by its MD5 hash. Requires ANNAS_SECRET_KEY and ANNAS_DOWNLOAD_PATH environment variables.", DownloadTool, mcp.Input(

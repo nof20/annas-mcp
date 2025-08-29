@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/fang"
 	"github.com/iosifache/annas-mcp/internal/anna"
 	"github.com/iosifache/annas-mcp/internal/logger"
+	"github.com/iosifache/annas-mcp/internal/types"
 	"github.com/iosifache/annas-mcp/internal/version"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -41,7 +42,7 @@ func StartCLI() {
 			searchTerm := args[0]
 			l.Info("Search command called", zap.String("searchTerm", searchTerm))
 
-			books, err := anna.FindBook(searchTerm)
+			books, err := anna.Search(searchTerm)
 			if err != nil {
 				l.Error("Search command failed",
 					zap.String("searchTerm", searchTerm),
@@ -55,16 +56,13 @@ func StartCLI() {
 				return nil
 			}
 
-			for i, book := range books {
-				fmt.Printf("Book %d:\n%s\n", i+1, book.String())
-				if i < len(books)-1 {
-					fmt.Println()
-				}
+			for _, book := range books {
+				fmt.Println(anna.String(&book))
+				fmt.Println("---")
 			}
 
 			l.Info("Search command completed successfully",
 				zap.String("searchTerm", searchTerm),
-				zap.Int("resultsCount", len(books)),
 			)
 
 			return nil
@@ -100,13 +98,13 @@ func StartCLI() {
 				return fmt.Errorf("failed to get environment: %w", err)
 			}
 
-			book := &anna.Book{
+			book := &types.Book{
 				Hash:   bookHash,
 				Title:  title,
 				Format: format,
 			}
 
-			err = book.Download(env.SecretKey, env.DownloadPath)
+			err = anna.Download(book, env.SecretKey, env.DownloadPath)
 			if err != nil {
 				l.Error("Download command failed",
 					zap.String("bookHash", bookHash),
